@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="swarm_node_count" type="node_count.py" name="node_counter" output="screen">
+    </node>
+</launch>
