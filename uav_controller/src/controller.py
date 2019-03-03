@@ -3,7 +3,7 @@
 '''
 # Author:           Martin Pozniak
 # Creation Date:    2/23/19
-# Last Edit Date:   2/23/19
+# Last Edit Date:   2/28/19
 # Description:      controller.py instantiates a new drone by calling drone_brain.py.
 #                   This file runs all on-board control for each drone to complete a mission.
 '''
@@ -26,23 +26,26 @@ def print_stats(stat):
 # ===================ONBOARD CONTROL======================================
 # ========================================================================
 
-vehicle = DroneBrain()  # Initialize this drone and give it access to all vehicle controls from drone_brain.py
-rate = rospy.Rate(20)
+vehicle = DroneBrain() 
+rate = rospy.Rate(50)
 
-rospy.loginfo("==Setting Mode To Offboaard==")
+rospy.loginfo("Setting Mode To Offboard")
 vehicle.set_mode("OFFBOARD")
-rospy.loginfo("==Mode set to offboard==")
+rospy.loginfo("Mode Successfully Set To Offboard")
 
 uav_id = vehicle.get_stats()['id']
 
 desired_alt = 1
+
+# Once dynamic positioning is implemented we can remove the below ID specific instructions. 
+# Position will be determined relative to the UAV elected as master.
 
 if uav_id == 1: 
     rospy.loginfo("==UAV TAKEOFF==")
     vehicle.takeoff(desired_alt)  # Takeoff function will ARM the UAV
     while not rospy.is_shutdown():        
 
-        rospy.loginfo("==Moving To Home==")
+        # rospy.loginfo("==Moving To Home==")
 
         vehicle.move_to(0, 0, 2)
 
@@ -70,8 +73,7 @@ if uav_id == 1:
         
 elif uav_id == 2:
     vehicle.takeoff(desired_alt)
-    # time.sleep(4)
-    # vehicle.wait_for_position_from(uav=1, alt=2) # UAVs publish to a topic when they successfully reach their target location. We can use that to wait
+    
     while not rospy.is_shutdown():
 
         stats = vehicle.get_stats()
@@ -82,31 +84,28 @@ elif uav_id == 2:
 
 elif uav_id == 3:
     vehicle.takeoff(desired_alt)
-    time.sleep(4)
-    # vehicle.wait_for_position_from(uav=1, alt=2) # UAVs publish to a topic when they successfully reach their target location. We can use that to wait
+    
     while not rospy.is_shutdown():
 
         stats = vehicle.get_stats()
 
-        vehicle.follow(1, -5, -1, 0, None)
+        vehicle.follow(1, -3, -1, 0, None)
 
         rate.sleep()
 
 elif uav_id == 4:
     vehicle.takeoff(desired_alt)
-    time.sleep(4)
-    # vehicle.wait_for_position_from(uav=1, alt=2) # UAVs publish to a topic when they successfully reach their target location. We can use that to wait
+   
     while not rospy.is_shutdown():
 
         stats = vehicle.get_stats()
 
-        vehicle.follow(1, -6, 0, 0, None)
+        vehicle.follow(1, -4, 0, 0, None)
         rate.sleep()
 
 elif uav_id == 5: 
     vehicle.takeoff(desired_alt)
-    time.sleep(4)
-    # vehicle.wait_for_position_from(uav=1, alt=2) # UAVs publish to a topic when they successfully reach their target location. We can use that to wait
+    
     while not rospy.is_shutdown():
 
         stats = vehicle.get_stats()
@@ -116,3 +115,8 @@ elif uav_id == 5:
         rate.sleep()
 
 rospy.loginfo("==SCRIPT FINISHED==")
+
+# Register Each UAV To the network
+# Begin Forming a Formation
+# Execute Search
+# Once Target is Found, Surround It Relay Message To Ground Station

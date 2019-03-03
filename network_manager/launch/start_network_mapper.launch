@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="network_manager" type="network_mapper.py" name="network_mapper" output="screen">
+    </node>
+</launch>
