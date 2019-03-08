@@ -73,23 +73,33 @@ if uav_id == 1:
         
 elif uav_id == 2:
     vehicle.takeoff(desired_alt)
-    
+    count = 0
     while not rospy.is_shutdown():
 
+        count+=1
         stats = vehicle.get_stats()
-
-        vehicle.follow(1, -1, 1, 0, None)
+        if count < 5000:
+            vehicle.follow(1, -1, 1, 0, None)
+        elif count >= 5000:       
+            vehicle.follow(1, -1, -1, 0, None)
+        elif count > 10000:
+            count = 0
 
         rate.sleep()
 
 elif uav_id == 3:
     vehicle.takeoff(desired_alt)
-    
+    count = 0
     while not rospy.is_shutdown():
 
+        count+=1
         stats = vehicle.get_stats()
-
-        vehicle.follow(1, -3, -1, 0, None)
+        if count < 5000:
+            vehicle.follow(1, -3, -1, 0, None)
+        elif count >= 5000:
+            vehicle.follow(1, -3, 1, 0, None)
+        elif count > 10000:
+            count = 0
 
         rate.sleep()
 

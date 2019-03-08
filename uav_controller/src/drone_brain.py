@@ -14,12 +14,16 @@
 #   - Basic Cleaning
 #   - Changed keys for uav neighbor position objects to 1,2,3,4 instead of uav1,uav2,uav3 for simpler code. Keys are strings since there was weird behavior with ints.
 #   - Added functionality to changed failsafe modes
-#   - Added Ability to get and set px4 parameters
+#   - Added Ability to get and set px4 parameters, PID
+#   
+#   Potential Field Method, 
 #
 # Notes: MultiMaster FKIE
 #   Determine how messages will be communicated between hardware devices.
 #       - How are topics published and subcribed to between machines.
 #   To connect to a physical PX4, roslaunch mavros and use /dev/ttyACM0 or whatever the port is.
+#
+# NS3, OLSR, HSMM, Wifi_com or what For Networkiing?
 '''
 
 # ===================Imports==============================================
@@ -57,17 +61,24 @@ class DroneBrain:
         self.rate = rospy.Rate(50)  
 
         # Create required publsihers for control
-        self.target_pos_pub = rospy.Publisher(self.uav_id + "/mavros/setpoint_position/local", PoseStamped, queue_size=10)
-        self.target_vel_pub = rospy.Publisher(self.uav_id + "/mavros/setpoint_velocity/cmd_vel", TwistStamped, queue_size=10)
+        self.target_pos_pub = rospy.Publisher(
+            self.uav_id + "/mavros/setpoint_position/local", PoseStamped, queue_size=10)
+        self.target_vel_pub = rospy.Publisher(
+            self.uav_id + "/mavros/setpoint_velocity/cmd_vel", TwistStamped, queue_size=10)
         
 
         # Create required subcribers for information and control
         self.state_sub = rospy.Subscriber(self.uav_id + "/mavros/state", State, self.state_changed_callback)
-        self.actual_pos_sub = rospy.Subscriber(self.uav_id + "/mavros/local_position/pose", PoseStamped, self.position_callback)
-        self.actual_pos_sub = rospy.Subscriber(self.uav_id + "/mavros/global_position/global", NavSatFix, self.global_pos_changed_callback)
-        self.actual_vel_sub = rospy.Subscriber(self.uav_id + "/mavros/local_position/velocity_local", TwistStamped, self.velocity_callback)
-        self.battery_voltage_sub = rospy.Subscriber(self.uav_id + "/mavros/battery", BatteryState, self.battery_voltage_callback)
-        self.network_state_sub = rospy.Subscriber("/network_map", Int32, self.network_state_changed_callback)  
+        self.actual_pos_sub = rospy.Subscriber(
+            self.uav_id + "/mavros/local_position/pose", PoseStamped, self.position_callback)
+        self.actual_pos_sub = rospy.Subscriber(
+            self.uav_id + "/mavros/global_position/global", NavSatFix, self.global_pos_changed_callback)
+        self.actual_vel_sub = rospy.Subscriber(
+            self.uav_id + "/mavros/local_position/velocity_local", TwistStamped, self.velocity_callback)
+        self.battery_voltage_sub = rospy.Subscriber(
+            self.uav_id + "/mavros/battery", BatteryState, self.battery_voltage_callback)
+        self.network_state_sub = rospy.Subscriber(
+            "/network_map", Int32, self.network_state_changed_callback)  
 
         # Create Objects to pair with above pubs and subs    
         self.desired_velocity_object = TwistStamped()
@@ -106,9 +117,9 @@ class DroneBrain:
             self.count = 0
             for i in range(1, len(self.neighbor_global_position_objects)+2):
                 if(str(i) in self.neighbor_global_position_objects.keys()):
-                    absolute = str(self.get_absolute_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]))
-                    vert = str(self.actual_global_pos_object.altitude - self.neighbor_global_position_objects[i].altitude)
-                    horiz = str(self.get_horizontal_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]))
+                    absolute = str(round(self.get_absolute_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]), 0))
+                    vert = str(round(self.actual_global_pos_object.altitude - self.neighbor_global_position_objects[i].altitude, 2))
+                    horiz = str(round(self.get_horizontal_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]), 2))
                     print "D"+str(i)+": Abs:" +absolute +" Hor:"+horiz + " Vert:"+vert
         else:
             self.count += 1
@@ -139,9 +150,12 @@ class DroneBrain:
                     
                 if not i in self.neighbor_position_objects.keys():
                     
-                    self.neighbor_pos_sub[str(i)] = rospy.Subscriber(uav_name + "/mavros/local_position/pose", PoseStamped, self.neighbor_position_changed_callback, i )
-                    self.neighbor_vel_sub[str(i)] = rospy.Subscriber(uav_name + "/mavros/local_position/velocity_local", TwistStamped, self.neighbor_velocity_changed_callback, i)
-                    self.neighbor_global_pos_sub[str(i)] = rospy.Subscriber(uav_name + "/mavros/global_position/global", NavSatFix, self.neighbor_global_pos_changed_callback, i)
+                    self.neighbor_pos_sub[str(i)] = rospy.Subscriber(
+                        uav_name + "/mavros/local_position/pose", PoseStamped, self.neighbor_position_changed_callback, i )
+                    self.neighbor_vel_sub[str(i)] = rospy.Subscriber(
+                        uav_name + "/mavros/local_position/velocity_local", TwistStamped, self.neighbor_velocity_changed_callback, i)
+                    self.neighbor_global_pos_sub[str(i)] = rospy.Subscriber(
+                        uav_name + "/mavros/global_position/global", NavSatFix, self.neighbor_global_pos_changed_callback, i)
 
     def state_changed_callback(self, state_object):
         self.state = state_object
@@ -160,6 +174,10 @@ class DroneBrain:
 
 
     # ====================Collision Avoidance Functions=======================
+    # We define the collision hull of each UAV as a cylinder that surrounds its shape.
+    # An impending collision occurs when the collision cylinders of two UAVs
+    # overlap or when an external obstacle enters the collision cylinder of a UAV.
+    # https://www.youtube.com/watch?v=-iiPJ9vuUA8&feature=youtu.be
     # ========================================================================
     def is_impending_collision(self, other_pos_object):
         # rospy.loginfo("DISTANCE FROM UAV " + str(self.get_absolute_distance_between(self.actual_pos_object, other_pos_object)))
@@ -180,9 +198,28 @@ class DroneBrain:
             return False
 
     def avoid_collision(self, other_global_pos_object, index):
-        pass
         # We know the other UAV's Position and Velocity, how can we reliably avoid a collision??
         # self.set_velocity(vx, vy, vz)
+        if (self.actual_global_pos_object.altitude > other_global_pos_object.altitude):
+            print "Moving up"
+            vx = 0
+            vy = 0
+            vz = 0.4
+        else:
+            if (self.actual_pos_object.pose.position.z > 1.2):
+                print "Moving down"
+                vx = 0
+                vy = 0
+                vz = -0.4
+            else:
+                print "Staying Still"
+                vx = 0
+                vy = 0
+                vz = 0
+
+        for i in range(200):
+            self.set_velocity(vx,vy,vz)
+            self.rate.sleep()
 
     # =========Get Horizontal Distance Between Function=======================
     # Uses Haversine's Formula to calculate distance between two (lat, lon) pairs.

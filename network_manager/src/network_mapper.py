@@ -3,7 +3,7 @@
 '''
 # Author:           Martin Pozniak
 # Creation Date:    2/26/19
-# Last Edit Date:   3/2/19
+# Last Edit Date:   3/3/19
 # Description:      Network_Mapper continuosly monitors for nodes within the network and publishes to /network_map topic 
 #                   when it detects a change in the network. Each UAV runs a network mapper program to keep track of nodes within their network.
 #
@@ -50,7 +50,7 @@ node_topic_pub = rospy.Publisher("/network_map", Int32)
 
 num_nodes = Int32()
 
-# num_nodes.data = input("Enter Number of Nodes To Test: ")
+num_nodes.data = input("Enter Number of Nodes To Test: ")
 
 # ===================Keep Node Alive======================================
 # ========================================================================
@@ -58,7 +58,7 @@ while not rospy.is_shutdown():
 
     # Discover hosts on the network
     # Take the num of hosts
-    start_ping_sweep()
-    # node_topic_pub.publish(num_nodes)
+    #start_ping_sweep()
+    node_topic_pub.publish(num_nodes)
     rate.sleep()
     
