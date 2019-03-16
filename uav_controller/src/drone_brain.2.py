@@ -3,21 +3,27 @@
 '''
 # Author:           Martin Pozniak
 # Creation Date:    2/23/19
-# Last Edit Date:   3/16/19
+# Last Edit Date:   3/15/19
 # Description:      drone_brain.py initializes a new ROS node and contains all functions to control the UAV.
 #                   It runs onboard the UAV.
 #
 # Changes For This Commit:
-#   - Changed the way UAVs exchange information between one another. Instead of updating UAV 
-#   positions with every neighbor callback. We only update during our own position callback. 
-#   This seems to have fixed the issue of delayed or completely wrong neighbor information.
-#   - Collision Avoidance Algorithm is closer to proper functionality. Currently, they are properly avoiding each other but crudely. Tuning is needed.
+#   - *Potentially* Solved issue where UAV stops getting updated other 
+#       position information when attempting to avoid collisions 
+#   - Added flag to prevent publishing any movement other than collision 
+#       avoidance when collision avoidance is necessary.
+#   - Removed Collision Avoidance Algorithm. Needs Serious Work
+#   - Basic Cleaning
+#   - Changed keys for uav neighbor position objects to 1,2,3,4 instead of uav1,uav2,uav3 for simpler code. Keys are strings since there was weird behavior with ints.
+#   - Added functionality to changed failsafe modes
+#   - Added Ability to get and set px4 parameters, PID
+#   
 #   Potential Field Method, 
-#   - Need to fix RC/OFFB disconnect functionality as the UAVs just lose their minds when offboard control is terminated.
-#   - Need to clean the code and tune significantly.
-#   - controller.py was renamed to mission.py as it is the script that controls the mission.
-#   - controller_launch.launch was renamed to mission_launch.launch
-#   - additional launch files created to start the UAVs in different configurations for different mission planning.
+#
+# Notes: MultiMaster FKIE
+#   Determine how messages will be communicated between hardware devices.
+#       - How are topics published and subcribed to between machines.
+#   To connect to a physical PX4, roslaunch mavros and use /dev/ttyACM0 or whatever the port is.
 '''
 
 # ===================Imports==============================================
@@ -47,25 +53,25 @@ class DroneBrain:
 
         rospy.init_node("controller" + str(self.id), anonymous=True)
 
-        self.rate = rospy.Rate(100)  # Determine what this value should be to maximize performance in sim and real world scenarios
+        self.rate = rospy.Rate(10)  # Determine what this value should be to maximize performance in sim and real world scenarios
 
         # Define Collision Cylinders
         # Change these later to a dynamic value that depends on breaking distance so Rc = Rc +Dbr 'breaking distance'.
-        self.reserved_cyl_radius = 2 
-        self.reserved_cyl_vertical = 1
+        self.reserved_cyl_radius = 1.5 
+        self.reserved_cyl_vertical = 3
         self.blocking_cyl_radius = self.reserved_cyl_radius
-        self.blocking_cyl_vertical = 2
+        self.blocking_cyl_vertical = 5
 
         self.conflict_state = {
             'xy': 'xy-free',
             'z': 'z-free'
         }
-        self.escape_angle = 0
+
         # Setup the cylindrical obstacle diagram (COD)
         self.COD = {
-            'distance': {},
-            'angle': {},
-            'z-diff': {}
+            'distance': [],
+            'angle': [],
+            'z-diff': []
         }
 
         # Create required publsihers for control
@@ -124,8 +130,33 @@ class DroneBrain:
 
         self.neighbor_global_position_objects[index] = position_object
 
+        # if(self.count > 100):
+        #     self.count = 0
+        for i in range(1, len(self.neighbor_global_position_objects)+2):
+            if(str(i) in self.neighbor_global_position_objects.keys()): 
+                absolute = str(round(self.get_absolute_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]), 0))
+                vert = str(round(self.actual_global_pos_object.altitude - self.neighbor_global_position_objects[i].altitude, 2))
+                horiz = str(round(self.get_horizontal_distance_between(self.actual_global_pos_object,self.neighbor_global_position_objects[i]), 2))
+                bearing = str(round(self.get_heading_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i]), 2))  
+                rospy.loginfo("D" + str(i) + ": Abs:" + str(absolute) + " Hor:" + str(horiz) + " Vert:" + str(vert) + " Brng:" + str(bearing))
+
+        # else:
+        #     self.count += 1
+
+        self.compute_conflict_state(index)
+
+        if (self.conflict_state["xy"] != "xy-free" or self.conflict_state["z"] != "z-free"):
+            print " xy was " + self.conflict_state["xy"] + " z was " + self.conflict_state["z"] 
+            self.currently_avoiding = True
+            self.avoid_collision(self.conflict_state, index)
+
+        else:
+            self.currently_avoiding = False
+
+
     def neighbor_velocity_changed_callback(self, velocity_object, index):
         self.neighbor_velocity_objects[index] = velocity_object
+
 
     def network_state_changed_callback(self, new_num_nodes):
         self.num_nodes_in_swarm = new_num_nodes
@@ -134,11 +165,13 @@ class DroneBrain:
             uav_name = "uav"+str(i)
             if (i != self.id):
                 if i not in self.neighbor_position_objects.keys():
+
                     self.neighbor_position_objects[str(i)] = PoseStamped()
                     self.neighbor_global_position_objects[str(i)] = NavSatFix()
                     self.neighbor_velocity_objects[str(i)] = TwistStamped()
-
-                if i not in self.neighbor_position_objects.keys():       
+                    
+                if i not in self.neighbor_position_objects.keys():
+                    
                     self.neighbor_pos_sub[str(i)] = rospy.Subscriber(
                         uav_name + "/mavros/local_position/pose", PoseStamped, self.neighbor_position_changed_callback, i )
                     self.neighbor_vel_sub[str(i)] = rospy.Subscriber(
@@ -151,26 +184,10 @@ class DroneBrain:
 
     def heading_changed_callback(self, float_object):
         self.heading = float_object.data
+        print "Heading: " + str(self.heading) + " deg"
 
     def position_callback(self, position_object):
         self.actual_pos_object = position_object
-
-        # First compute the COD
-        for i in range(1, len(self.neighbor_global_position_objects) + 2):
-            if(str(i) in self.neighbor_global_position_objects.keys()):
-                self.COD['distance'][i] = self.get_absolute_distance_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i])
-                self.COD['angle'][i] = self.get_heading_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i])
-                self.COD['z-diff'][i] = abs(self.actual_global_pos_object.altitude - self.neighbor_global_position_objects[i].altitude)
-                rospy.loginfo(str(i) + " H: " + str(round(self.COD['distance'][i], 2)) + " V: " + str(round(self.COD['z-diff'][i], 2)) + " HDG: " + str(round(self.COD['angle'][i], 2)))
- 
-        self.compute_conflict_state()
-
-        if (self.conflict_state["xy"] != "xy-free" or self.conflict_state["z"] != "z-free"):
-            self.currently_avoiding = True
-            self.avoid_collision(self.conflict_state)
-
-        else:
-            self.currently_avoiding = False
     
     def global_pos_changed_callback(self, position_object):
         self.actual_global_pos_object = position_object
@@ -190,114 +207,43 @@ class DroneBrain:
     # https://www.youtube.com/watch?v=-iiPJ9vuUA8&feature=youtu.be
     # ========================================================================
 
-    def compute_conflict_state(self):    
-        '''
-        if reserved cyl is breached based on Distance in COD
-            Determine XY conflict
-            for each COD[distance] breaching the reserved cyl
-                update forbidden bearing min and max values
-                determine if any escape bearing exists
-                if so
-                    xy-rendevous and note the escape angle
-                else
-                    xy-blocked
-                    don't move
-            Determine Z conflict
-            for each COD[z-dif] 
-                if any z-dif is in the blocking zone
-                    z-blocked
-                else
-                    z - free
-                    
-        '''
-        # If a reserved cyl is breached, compute the conflict state
-        no_breach = True
-        for i in range(1, len(self.COD['distance'])+2):
-            if(str(i) in self.neighbor_global_position_objects.keys()):
-                if(self.COD['distance'][i] < self.reserved_cyl_radius * 2 and self.COD['z-diff'][i] <= self.reserved_cyl_vertical):
-                    print("FOUND RESERVED CYL BREACH. Calculating Current XY Conflict Level")
-                    no_breach = False
-                    forbidden_angles = {
-                        'min':-1,
-                        'max': 361
-                    }
-                    right_side = 0
-                    left_side = 0
-                    for i in range(1, len(self.COD['distance'])+2):
-                        if(str(i) in self.neighbor_global_position_objects.keys()):
-                            if(self.COD['distance'][i] < self.reserved_cyl_radius * 2 and self.COD['z-diff'][i] <= self.reserved_cyl_vertical):
-                                # Reserved Cyl is breached. # Update the forbidden angles.
-                                angle_to_target = self.get_heading_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i])
-
-                                right_side = angle_to_target - 90
-                                self.escape_angle = right_side
-                                if right_side < 0:
-                                    right_side = right_side + 360
-
-                                left_side = angle_to_target + 90
-                                if left_side >= 360:
-                                    left_side = left_side % 360
-
-                                if right_side < forbidden_angles['max']:
-                                    forbidden_angles['max'] = right_side
-                                
-                                if left_side > forbidden_angles['min']:
-                                    forbidden_angles['min'] = left_side
-
-                    # Now that we know the forbidden angles, we can see if there's a suitable escape route.
-                    if(right_side > forbidden_angles['min'] and right_side <= forbidden_angles['max'] or right_side < forbidden_angles['min'] and right_side >= forbidden_angles['max']):
-                        self.escape_angle = right_side
-                        self.conflict_state['xy'] = 'rendezvous'
-                        print "FOUND ESCAPE HEADING OF: " + str(self.escape_angle)
-                    else: 
-                        print "forbidden [" + str(forbidden_angles['min']) + ',' + str(forbidden_angles['max']) + " escape was " + str(right_side) +" NO ESCAPE HEADING, UAV BLOCKED"
-                        self.conflict_state['xy'] = 'xy-blocked'  
-                if no_breach:
-                    print "NO BREACH" 
-                    self.conflict_state['xy'] = 'xy-free'
-
-                # Now that the xy state and escape angle has been calculated, determine the z state
-                for i in range(1, len(self.COD['distance'])+2):
-                    if(str(i) in self.neighbor_global_position_objects.keys()):
-                        if(self.COD['distance'][i] < self.reserved_cyl_radius * 2 and self.COD['z-diff'][i] > self.reserved_cyl_vertical and self.COD['z-diff'][i] <= self.blocking_cyl_vertical):
-                            # Z conflict only, but UAVs can fly past each other
-                            print " Z CONFLICT"
-                            self.conflict_state['z'] = "z-blocked"
-                        else:
-                            self.conflict_state['z'] = "z-free"
-                print self.conflict_state
-
-    def avoid_collision(self, conflict_state):
-        vx = self.actual_velocity_object.linear.x
-        vy = self.actual_velocity_object.linear.y
-        vz = self.actual_velocity_object.linear.z
-
-        if (self.conflict_state['xy'] == "xy-blocked"):
-            vx = 0
-            vy = 0
-        elif (self.conflict_state['xy'] == "rendezvous"):
-            x_y_ratio = math.atan(self.escape_angle)
-            print x_y_ratio
-            if self.escape_angle > 89 and self.escape_angle < 269:
-                vx = -1
-                vy = -2 * vx / x_y_ratio 
-            else:
-                vx = 1
-                vy = -2 * vx / x_y_ratio
-        if (self.conflict_state['z'] == "z-blocked"):
-            vz = 0
-        else:
-            vz = self.actual_velocity_object.linear.z
-            if self.actual_global_pos_object.altitude < 1:
-                vz = 1
+    def compute_conflict_state(self, i):    
+        absolute_distance = self.get_absolute_distance_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i])
+        horizontal_distance = self.get_horizontal_distance_between(self.actual_global_pos_object, self.neighbor_global_position_objects[i])
+        vertical_distance = abs(self.actual_global_pos_object.altitude - self.neighbor_global_position_objects[i].altitude)
         
-        for i in range(50):
-            print "Vx:" + str(vx) + " Vy:" + str(vy) + " Vz:" + str(vz)
-            if self.actual_pos_object.pose.position.z < 1:
-                vz = 0.2
-            self.set_velocity(vx, vy, vz)
-            self.rate.sleep()
-            
+        rospy.loginfo("Horz: " + str(horizontal_distance) + " Vert: " + str(vertical_distance))
+
+        if(horizontal_distance < self.reserved_cyl_radius * 2 and vertical_distance <= self.reserved_cyl_vertical):
+            print " XY CONFLICT"
+            # xz conflict
+            # If there exists an escape angle
+            self.conflict_state['xy'] = "rendezvous"
+            # Else
+            self.conflict_state['xy'] = "xy-blocked"
+        else:
+            self.conflict_state['xy'] = "xy-free"
+
+        if(horizontal_distance < self.reserved_cyl_radius * 2 and vertical_distance > self.reserved_cyl_vertical and vertical_distance < self.blocking_cyl_vertical):
+            # Z conflict only, but UAVs can fly past each other
+            print " Z CONFLICT xy-free?"
+            self.conflict_state['z'] = "z-blocked"
+            self.conflict_state['xy'] = "xy-free"
+        else:
+            self.conflict_state['z'] = "z-free"
+        
+        print self.conflict_state
+
+    def avoid_collision(self, conflict_state, index):
+        while self.compute_conflict_state(index)
+        # We know the other UAV's Position and Velocity, how can we reliably avoid a collision??
+        # We need to calculate a safe vx,vy,vz and send that to the flight controller
+        # If things work properly the other UAV should follow a similar avoidance technique and a safe route should be taken.
+        # self.set_velocity(vx, vy, vz)
+        # conflict state = {
+        #   'xy':state
+        #   'z':state
+        # }
         
     # =========Get Horizontal Distance Between Function=======================
     # Uses Haversine's Formula to calculate distance between two (lat, lon) pairs.
