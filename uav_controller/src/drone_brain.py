@@ -3,21 +3,18 @@
 '''
 # Author:           Martin Pozniak
 # Creation Date:    2/23/19
-# Last Edit Date:   3/16/19
+# Last Edit Date:   3/29/19
 # Description:      drone_brain.py initializes a new ROS node and contains all functions to control the UAV.
 #                   It runs onboard the UAV.
 #
 # Changes For This Commit:
-#   - Changed the way UAVs exchange information between one another. Instead of updating UAV 
-#   positions with every neighbor callback. We only update during our own position callback. 
-#   This seems to have fixed the issue of delayed or completely wrong neighbor information.
-#   - Collision Avoidance Algorithm is closer to proper functionality. Currently, they are properly avoiding each other but crudely. Tuning is needed.
-#   Potential Field Method, 
+#   - Added ROS Param Server check for ID.
+#   - Added ROS landing service
+#   - Need to add relative master election algorithm.
+#   - Need to implement basic dynamic position planning algorithm. 
 #   - Need to fix RC/OFFB disconnect functionality as the UAVs just lose their minds when offboard control is terminated.
+#   - Need to fix 'z-blocked' collision state handling
 #   - Need to clean the code and tune significantly.
-#   - controller.py was renamed to mission.py as it is the script that controls the mission.
-#   - controller_launch.launch was renamed to mission_launch.launch
-#   - additional launch files created to start the UAVs in different configurations for different mission planning.
 '''
 
 # ===================Imports==============================================
@@ -26,9 +23,9 @@ import rospy
 import time
 import sys
 import math
-from std_msgs.msg import Int32, Int64, Float64
+from std_msgs.msg import Int32, Int32MultiArray, Int64, Float64
 from geometry_msgs.msg import Twist, PoseStamped, TwistStamped
-from mavros_msgs.srv import CommandBool, SetMode,  ParamGet, ParamSet
+from mavros_msgs.srv import CommandBool, SetMode,  ParamGet, ParamSet, CommandTOL
 from mavros_msgs.msg import State, GlobalPositionTarget, ParamValue
 from sensor_msgs.msg import BatteryState, NavSatFix
 
@@ -42,19 +39,24 @@ class DroneBrain:
     def __init__(self):
 
         # Initialize the UAV
-        self.id = input("Drone ID #: ")
+        if rospy.has_param('ID'):
+            self.id = rospy.get_param("ID")  # input("Drone ID #: ")
+        else: 
+            self.id = input("Drone ID #: ")
+            
         self.uav_id = "uav" + str(self.id)
 
         rospy.init_node("controller" + str(self.id), anonymous=True)
 
-        self.rate = rospy.Rate(100)  # Determine what this value should be to maximize performance in sim and real world scenarios
+        self.rate = rospy.Rate(10000)  # Determine what this value should be to maximize performance in sim and real world scenarios
 
         # Define Collision Cylinders
-        # Change these later to a dynamic value that depends on breaking distance so Rc = Rc +Dbr 'breaking distance'.
+        # Change these later to a dynamic value that depends on breaking 
+        # distance so Rc = Rc + Dbr 'breaking distance'.
         self.reserved_cyl_radius = 2 
-        self.reserved_cyl_vertical = 1
+        self.reserved_cyl_vertical = 0.5
         self.blocking_cyl_radius = self.reserved_cyl_radius
-        self.blocking_cyl_vertical = 2
+        self.blocking_cyl_vertical = 1
 
         self.conflict_state = {
             'xy': 'xy-free',
@@ -72,7 +74,9 @@ class DroneBrain:
         self.target_pos_pub = rospy.Publisher(
             self.uav_id + "/mavros/setpoint_position/local", PoseStamped, queue_size=1)
         self.target_vel_pub = rospy.Publisher(
-            self.uav_id + "/mavros/setpoint_velocity/cmd_vel", TwistStamped, queue_size=1)   
+            self.uav_id + "/mavros/setpoint_velocity/cmd_vel", TwistStamped, queue_size=1)
+        self.uav_stats_pub = rospy.Publisher(
+            self.uav_id + "/stats/", Int32MultiArray)
 
         # Create required subcribers for information and control
         self.state_sub = rospy.Subscriber(
@@ -97,11 +101,14 @@ class DroneBrain:
         self.neighbor_global_position_objects = {}
         self.desired_pos_object = PoseStamped()
         self.actual_pos_object = PoseStamped()
+        self.stats_object = Int32MultiArray()
         self.actual_velocity_object = Twist()
         self.neighbor_velocity_objects = {}
         self.neighbor_position_objects = {}
         self.neighbor_global_pos_sub = {}
         self.num_nodes_in_swarm = Int32()
+        self.neighbor_state_objects = {} 
+        self.neighbor_state_sub = {}
         self.mode_object = SetMode()
         self.neighbor_pos_sub = {}
         self.neighbor_vel_sub = {}
@@ -113,12 +120,15 @@ class DroneBrain:
         self.count = 0
 
         self.set_failsafe_action(2)
-        self.set_param('MPC_ACC_HOR_MAX', 1.0) 
 
     # ====================Callback Functions==================================
     # ========================================================================
     def neighbor_position_changed_callback(self, position_object, index):
         self.neighbor_position_objects[index] = position_object
+    
+    def neighbor_state_changed_callback(self, state_object, index):
+        # print("STATE CHANGED")
+        self.neighbor_state_objects[index] = state_object
 
     def neighbor_global_pos_changed_callback(self, position_object, index):
 
@@ -132,13 +142,17 @@ class DroneBrain:
         
         for i in range(1, self.num_nodes_in_swarm.data + 1):
             uav_name = "uav"+str(i)
-            if (i != self.id):
+
+            if (i != self.id):  # Create objects to use to subscribe to neighbor stats
                 if i not in self.neighbor_position_objects.keys():
                     self.neighbor_position_objects[str(i)] = PoseStamped()
                     self.neighbor_global_position_objects[str(i)] = NavSatFix()
                     self.neighbor_velocity_objects[str(i)] = TwistStamped()
+                    self.neighbor_state_objects[str(i)] = State()
 
-                if i not in self.neighbor_position_objects.keys():       
+                if i not in self.neighbor_position_objects.keys():
+                    self.neighbor_state_sub[str(i)] = rospy.Subscriber(
+                        uav_name + "/mavros/state", State, self.neighbor_state_changed_callback, i)       
                     self.neighbor_pos_sub[str(i)] = rospy.Subscriber(
                         uav_name + "/mavros/local_position/pose", PoseStamped, self.neighbor_position_changed_callback, i )
                     self.neighbor_vel_sub[str(i)] = rospy.Subscriber(
@@ -182,7 +196,6 @@ class DroneBrain:
     def battery_voltage_callback(self, battery_voltage):
         self.battery_voltage_object.voltage = battery_voltage
 
-
     # ====================Collision Avoidance Functions=======================
     # We define the collision hull of each UAV as a cylinder that surrounds its shape.
     # An impending collision occurs when the collision cylinders of two UAVs
@@ -215,7 +228,7 @@ class DroneBrain:
         for i in range(1, len(self.COD['distance'])+2):
             if(str(i) in self.neighbor_global_position_objects.keys()):
                 if(self.COD['distance'][i] < self.reserved_cyl_radius * 2 and self.COD['z-diff'][i] <= self.reserved_cyl_vertical):
-                    print("FOUND RESERVED CYL BREACH. Calculating Current XY Conflict Level")
+                    # print("FOUND RESERVED CYL BREACH. Calculating Current XY Conflict Level")
                     no_breach = False
                     forbidden_angles = {
                         'min':-1,
@@ -251,9 +264,9 @@ class DroneBrain:
                         print "FOUND ESCAPE HEADING OF: " + str(self.escape_angle)
                     else: 
                         print "forbidden [" + str(forbidden_angles['min']) + ',' + str(forbidden_angles['max']) + " escape was " + str(right_side) +" NO ESCAPE HEADING, UAV BLOCKED"
-                        self.conflict_state['xy'] = 'xy-blocked'  
-                if no_breach:
-                    print "NO BREACH" 
+                        self.conflict_state['xy'] = 'xy-blocked'
+
+                if no_breach:                
                     self.conflict_state['xy'] = 'xy-free'
 
                 # Now that the xy state and escape angle has been calculated, determine the z state
@@ -272,33 +285,49 @@ class DroneBrain:
         vy = self.actual_velocity_object.linear.y
         vz = self.actual_velocity_object.linear.z
 
-        if (self.conflict_state['xy'] == "xy-blocked"):
+        if (self.conflict_state['xy'] == "xy-blocked"):      
             vx = 0
             vy = 0
         elif (self.conflict_state['xy'] == "rendezvous"):
-            x_y_ratio = math.atan(self.escape_angle)
-            print x_y_ratio
-            if self.escape_angle > 89 and self.escape_angle < 269:
-                vx = -1
-                vy = -2 * vx / x_y_ratio 
-            else:
-                vx = 1
-                vy = -2 * vx / x_y_ratio
-        if (self.conflict_state['z'] == "z-blocked"):
-            vz = 0
-        else:
-            vz = self.actual_velocity_object.linear.z
-            if self.actual_global_pos_object.altitude < 1:
-                vz = 1
-        
-        for i in range(50):
+            # Go in the direction of the escape angle. If the escape angle is properly updated, the UAVs should rotate CCW around each other
+            vx = abs(math.cos(self.escape_angle))
+            vy = abs(math.sin(self.escape_angle))
+
+            if self.escape_angle >= 0 and self.escape_angle <= 90: # quad 1 -x +y
+                vx = -1 * vx
+            elif self.escape_angle > 90 and self.escape_angle <= 180: # quad 2 -x -y
+                vx = -1 * vx
+                vy = -1 * vy                
+            elif self.escape_angle > 180 and self.escape_angle <= 270: # quad 3 +x -y
+                vy = -1 * vy
+            elif self.escape_angle > 270 and self.escape_angle <= 360: # quad 4 +x +y
+                pass
+
+            if abs(vx) < 1 and abs(vy) < 1:
+                if vx < 0:
+                    vx -= 1
+                else:
+                    vx += 1
+                if vy < 0:
+                    vy -= 1
+                else:
+                    vy += 1   
+
+        # if (self.conflict_state['z'] == "z-blocked"):
+        #     vz = 0
+            
+        # else:
+        #     vz = self.actual_velocity_object.linear.z
+        #     if self.actual_pos_object.pose.position.z < 0.5:
+        #         vz = 0.1
+
+        for i in range(100):
             print "Vx:" + str(vx) + " Vy:" + str(vy) + " Vz:" + str(vz)
-            if self.actual_pos_object.pose.position.z < 1:
-                vz = 0.2
+            if self.actual_pos_object.pose.position.z < 0.5:
+                vz = 0.1
             self.set_velocity(vx, vy, vz)
             self.rate.sleep()
-            
-        
+                
     # =========Get Horizontal Distance Between Function=======================
     # Uses Haversine's Formula to calculate distance between two (lat, lon) pairs.
     # ========================================================================
@@ -369,6 +398,19 @@ class DroneBrain:
 
         rospy.loginfo("UAV " + str(self.id) + " ARMED")
 
+    # ====================Dis-Arming Function=====================================
+    # ========================================================================
+    def disarm(self):
+        cmd = CommandBool()
+        cmd.value = False
+        self.arming_service_client = rospy.ServiceProxy("uav" + str(self.id) + "/mavros/cmd/arming", CommandBool)
+        while not self.arming_service_client(cmd.value).success is True:
+            rospy.loginfo("UAV " + str(self.id) + " waiting to disarm")
+
+            self.rate.sleep()
+
+        rospy.loginfo("UAV " + str(self.id) + " DISARMED")
+
     # ====================in_position Function================================
     # ========================================================================
     def in_position(self):
@@ -434,6 +476,26 @@ class DroneBrain:
             self.rate.sleep()
 
         rospy.loginfo("MODE SUCCESSFULLY CHANGED")
+    
+    # ====================Landing Function====================================
+    # ========================================================================
+    def land(self):
+
+        print "Waiting for service"
+        rospy.wait_for_service(self.uav_id + "/mavros/cmd/land")
+        try:
+            self.land_srv_client = rospy.ServiceProxy(self.uav_id + "/mavros/cmd/land", CommandTOL)
+
+            result = self.land_srv_client(altitude = 0, latitude = 0, longitude = 0, min_pitch = 0, yaw = 0)
+
+            while self.actual_pos_object.pose.position.z > 0.05 :
+                print "No Touchdown"
+
+            print "Touchdown"
+
+        except rospy.ServiceException, e:  
+            print "Service Call Failed..."
+            print e
 
     # ====================Takeoff Function====================================
     # ========================================================================
@@ -458,6 +520,24 @@ class DroneBrain:
 
                 rospy.loginfo("UAV was disarmed. Attempting - Rearm.")
                 self.arm()
+    
+    # ====================wait_for_neighbor_armed============================
+    # =======================================================================
+    def is_neighbor_armed(self, uav_id):
+
+        rospy.loginfo("Waiting for UAV " + str(uav_id) + " to Arm.")
+        
+        if(str(uav_id) in self.neighbor_state_objects.keys()):
+            print self.neighbor_state_objects[str(uav_id)]
+            if self.neighbor_state_objects[str(uav_id)].armed is True:
+                print("UAV" + str(uav_id) + " is armed")
+                return True
+            else:
+                print("UAV" + str(uav_id) + " is not armed")
+                self.disarm()
+                self.rate.sleep()
+        else:
+            print("UAV " + str(uav_id) + " is not in my network.")
                 
     # ====================Move To Function===================================
     # =======================================================================
@@ -551,5 +631,10 @@ class DroneBrain:
             return resp.value
         except rospy.ServiceException, e:
             print "Param Set Service call failed: %s"%e
+    
+    # ====================Election Aglorithm=================================
+    # This algorithm handles the election of a relative master for positioning.
+    # =======================================================================
+    # To be implemented...
 
 # ========================================================================

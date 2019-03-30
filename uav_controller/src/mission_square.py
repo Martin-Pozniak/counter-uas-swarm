@@ -3,7 +3,7 @@
 '''
 # Author:           Martin Pozniak
 # Creation Date:    2/23/19
-# Last Edit Date:   3/16/19
+# Last Edit Date:   3/29/19
 # Description:      mission.py instantiates a new drone by calling drone_brain.py.
 #                   This file runs all on-board control for each drone to complete a mission.
 '''
@@ -15,8 +15,7 @@ import rospy
 from drone_brain import *
 
 # ===================Functions==============================================
-# ==========================================================================
-
+# ========================================================================
 def print_stats(stat):
     stats = vehicle.get_stats()
     if(stat is None):           
@@ -28,7 +27,7 @@ def print_stats(stat):
 # ========================================================================
 
 vehicle = DroneBrain() 
-rate = rospy.Rate(100)
+rate = rospy.Rate(50)
 
 rospy.loginfo("Setting Mode To Offboard")
 vehicle.set_mode("OFFBOARD")
@@ -43,13 +42,29 @@ desired_alt = 1
 
 if uav_id == 1: 
     rospy.loginfo("==UAV TAKEOFF==")
-    vehicle.takeoff(desired_alt)  # Takeoff function will ARM the UAV
+    # vehicle.takeoff(desired_alt)  # Takeoff function will ARM the UAV
     while not rospy.is_shutdown():
 
-        vehicle.move_to(0, 0, 2)
+        rospy.loginfo("Taking off")
+        vehicle.takeoff(desired_alt)
+        rospy.loginfo("Moving to position 1/6")
+        vehicle.move_to(-1, 0, 2)
+        rospy.loginfo("Moving to position 2/6")
+        vehicle.move_to(-1, -1, 2)
+        rospy.loginfo("Moving to position 3/6")
+        vehicle.move_to(1, -1, 2)
+        rospy.loginfo("Moving to position 4/6")
+        vehicle.move_to(1, 1, 2)
+        rospy.loginfo("Moving to position 5/6")
+        vehicle.move_to(-1, 1, 2)
+        rospy.loginfo("Moving to position 6/6")
+        vehicle.move_to(-1, 0, 2)
+        rospy.loginfo("Landing")
+        vehicle.move_to(-0, 0, 2)     
+        vehicle.land()
 
         rate.sleep()
-    vehicle.set_mode("RTL")    
+        
 elif uav_id == 2:
     vehicle.takeoff(desired_alt)
     count = 0
@@ -58,11 +73,10 @@ elif uav_id == 2:
         stats = vehicle.get_stats()
         
         # vehicle.follow(1, -2, 2, 0, None)
-        vehicle.move_to(10,12,2)
+        vehicle.move_to(10,10,2)
         vehicle.move_to(0,0,2)
 
         rate.sleep()
-    vehicle.set_mode("RTL")
 
 elif uav_id == 3:
     vehicle.takeoff(desired_alt)
@@ -76,7 +90,7 @@ elif uav_id == 3:
         vehicle.move_to(0,0,0.6)
 
         rate.sleep()
-    vehicle.set_mode("RTL")
+
 elif uav_id == 4:
     vehicle.takeoff(desired_alt)
    
@@ -89,7 +103,7 @@ elif uav_id == 4:
         vehicle.move_to(0,0,2)
 
         rate.sleep()
-    vehicle.set_mode("RTL")
+
 elif uav_id == 5: 
     vehicle.takeoff(desired_alt)
     
@@ -98,11 +112,11 @@ elif uav_id == 5:
         stats = vehicle.get_stats()
 
         # vehicle.follow(1, -7, 1, 0, None)
-        vehicle.move_to(10,-10,0.6)
-        vehicle.move_to(0,0,0.6)
+        vehicle.move_to(10,-10,2)
+        vehicle.move_to(0,0,2)
 
         rate.sleep()
-    vehicle.set_mode("RTL")
+
 rospy.loginfo("==SCRIPT FINISHED==")
 
 # Register Each UAV To the network
