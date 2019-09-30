@@ -1,15 +1,15 @@
 #!/usr/bin/env/ python
 
 '''
-# Author:           Martin Pozniak
+# Author(s):        Martin Pozniak
 # Creation Date:    2/23/19
-# Last Edit Date:   3/29/19
+# Last Edit Date:   4/15/19
 # Description:      drone_brain.py initializes a new ROS node and contains all functions to control the UAV.
 #                   It runs onboard the UAV.
 #
 # Changes For This Commit:
-#   - Added ROS Param Server check for ID.
-#   - Added ROS landing service
+#   -
+# To-Do
 #   - Need to add relative master election algorithm.
 #   - Need to implement basic dynamic position planning algorithm. 
 #   - Need to fix RC/OFFB disconnect functionality as the UAVs just lose their minds when offboard control is terminated.
@@ -31,8 +31,6 @@ from sensor_msgs.msg import BatteryState, NavSatFix
 
 # ===============DroneBrain Class=========================================
 # ========================================================================
-
-
 class DroneBrain:
     # ===============Constructor Function=====================================
     # ========================================================================
@@ -76,7 +74,7 @@ class DroneBrain:
         self.target_vel_pub = rospy.Publisher(
             self.uav_id + "/mavros/setpoint_velocity/cmd_vel", TwistStamped, queue_size=1)
         self.uav_stats_pub = rospy.Publisher(
-            self.uav_id + "/stats/", Int32MultiArray)
+            self.uav_id + "/stats/", Int32MultiArray, queue_size=1)
 
         # Create required subcribers for information and control
         self.state_sub = rospy.Subscriber(
@@ -200,7 +198,7 @@ class DroneBrain:
     # We define the collision hull of each UAV as a cylinder that surrounds its shape.
     # An impending collision occurs when the collision cylinders of two UAVs
     # overlap or when an external obstacle enters the collision cylinder of a UAV.
-    # https://www.youtube.com/watch?v=-iiPJ9vuUA8&feature=youtu.be
+    # https://www.youtube.com/watch?v=-iiPJ9vuUA8&feature=youtu.be Collision avoidance is based on the 3D swap algorithm.
     # ========================================================================
 
     def compute_conflict_state(self):    
@@ -383,6 +381,7 @@ class DroneBrain:
     # ====================Arming Function=====================================
     # ========================================================================
     def arm(self):
+
         cmd = CommandBool()
         cmd.value = True
         self.arming_service_client = rospy.ServiceProxy("uav" + str(self.id) + "/mavros/cmd/arming", CommandBool)
@@ -401,6 +400,7 @@ class DroneBrain:
     # ====================Dis-Arming Function=====================================
     # ========================================================================
     def disarm(self):
+        
         cmd = CommandBool()
         cmd.value = False
         self.arming_service_client = rospy.ServiceProxy("uav" + str(self.id) + "/mavros/cmd/arming", CommandBool)

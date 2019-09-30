@@ -1,0 +1,6 @@
+<launch>
+    <arg name="ID" default="1"/>
+    <param name="ID" value="$(arg ID)"/>
+    <node pkg="uav_controller" type="target_mission.py" name="controller$(arg ID)" output="screen">
+    </node>   
+</launch>
