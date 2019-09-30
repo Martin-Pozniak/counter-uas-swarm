@@ -44,7 +44,7 @@ def start_ping_sweep():
 # ===================Initialization=======================================
 # ========================================================================
 rospy.init_node("network_mapper")
-rate = rospy.Rate(0.5) # Publish Updates Every 2 Seconds
+rate = rospy.Rate(2) # Publish Updates Every 2 Seconds
 
 node_topic_pub = rospy.Publisher("/network_map", Int32)
 
